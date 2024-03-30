@@ -118,7 +118,6 @@ class DataTransform:
         self.category_columns = [] if category_columns is None else category_columns
         self.numeric_columns = [] if numeric_columns is None else numeric_columns
         self.model_columns = []
-        self.text_columns = []
         self.drop_duplicates = False
         self.drop_first = drop_first
         self.exclude_columns = []
@@ -127,10 +126,10 @@ class DataTransform:
         self.transform_columns = None
         self.scaler = scaler
         self.args_scaler = args_scaler
-        # Тип Векторайзера
-        self.vectorizer = None
         # максимальная последовательность для векторизации
         self.vector_limit = None
+        # Тип Векторайзера
+        self.vectorizer = None
         # диапазон N-грамм
         self.ngram_range = (1, 1)
         # Минимальное количество последовательностей для векторизации
@@ -139,18 +138,6 @@ class DataTransform:
         self.max_features = None
         # обученный Векторайзер
         self.bigram_vectorizer = None
-        # Тип Векторайзера content_category
-        self.cont_cat_vectorizer = None
-        # максимальная последовательность для векторизации content_category
-        self.cont_cat_vector_limit = None
-        # диапазон N-грамм content_category
-        self.cont_cat_ngram_range = (1, 1)
-        # Минимальное количество последовательностей для векторизации content_category
-        self.cont_cat_min_df = 1
-        # Максимальное количество признаков content_category
-        self.cont_cat_max_features = None
-        # обученный Векторайзер content_category
-        self.cont_cat_bigram_vectorizer = None
         # удалять из трейна юзеров с пропусками
         self.drop_nan_users = False
         # удалять из трейна юзеров с пропусками только с X записями
@@ -159,18 +146,6 @@ class DataTransform:
         self.conv_info = None
         # максимальный предел пропусков для нахождения моды и среднего
         self.max_limit_nans = 0.2
-        # Объединить поля ssp и full_placement_id2
-        self.concat_ssp_full_placement_id2 = False
-        # Объединить поля user_id и bid_ip
-        self.concat_user_id_bid_ip = False
-        # Использовать укрупненные категории content_category
-        self.use_category_groups = False
-        # Создавать бинарные признаки из укрупненных категорий content_category
-        self.content_category_groups = False
-        # Создавать X признаков с разницей в секундах между текущим действием и предыдущими
-        self.time_shift_counts = 0
-        # Создавать бинарные признаки об информации по предыдущему действию
-        self.time_shift_counts_binary = 0
 
     def cat_dummies(self, df):
         """
@@ -265,12 +240,6 @@ class DataTransform:
                     df[field].fillna('-127', inplace=True)
         return df
 
-    @staticmethod
-    def make_shift_times(row, idx):
-        time_end = row['time']
-        times = [x for x in row['grp_times'] if x < time_end]
-        return (time_end - times[-idx]).total_seconds() if idx <= len(times) else -999
-
     def initial_preparation(self, df, file_df=None):
         """
         Общая первоначальная подготовка данных
@@ -281,7 +250,6 @@ class DataTransform:
         start_time = print_msg('Предобработка данных...')
 
         df['time'] = pd.to_datetime(df['time'])
-        df['date'] = pd.to_datetime(df['time']).dt.date
         # df['number_weekday'] = df['time'].dt.weekday
         # df['number_day'] = df['time'].dt.day
         df['number_hour'] = df['time'].dt.hour
@@ -321,7 +289,7 @@ class DataTransform:
         df['time_diff'] = (df['time'] - df['ud_cookie_ts']).dt.total_seconds()
         df['time_diff'] = df['time_diff'].fillna(-999).astype(int)
 
-        # разделение значений и преобразование их в бинарные метки content_tags
+        # разделение значений и преобразование их в бинарные метки
         df['content_tags'].fillna('', inplace=True)
         df[['ct72', 'ct73']] = df['content_tags'].str.get_dummies(',')
         df[['ct72', 'ct73']] = df[['ct72', 'ct73']].astype(int)
@@ -357,11 +325,7 @@ class DataTransform:
         print('\nОбработка колонки user_segments\n')
         tqdm.pandas()
         df.user_segments = df.user_segments.progress_apply(
-            lambda x: '' if pd.isna(x) else ' '.join(sorted(x.replace(' ', '').split(','),
-                                                            key=int)))
-        print('\nОбработка колонки content_category\n')
-        df.content_category = df.content_category.progress_apply(
-            lambda x: '' if pd.isna(x) else ' '.join(sorted(x.replace(' ', '').split(','))))
+            lambda x: '' if pd.isna(x) else ' '.join(sorted(x.split(','), key=int)))
 
         new_cat_features = ['ads_txt_support', 'gdpr_regulation', 'user_fraud_state',
                             'creative_id', 'user_detection_type', 'ua_type', 'user_status']
@@ -371,84 +335,6 @@ class DataTransform:
         # заполнение пропусков
         df = self.fillna_fields(df, new_cat_features + ['timezone_offset'])
         df.timezone_offset = (df.timezone_offset / 60).astype(int)
-
-        if hasattr(self, 'concat_ssp_full_placement_id2'):
-            if self.concat_ssp_full_placement_id2:
-                cols = ['ssp', 'full_placement_id2']
-                df['ssp_full_placement_id2'] = df[cols].apply(
-                    lambda row: '_'.join(row.values.astype(str)), axis=1)
-                self.exclude_columns.extend(cols)
-
-        if hasattr(self, 'concat_user_id_bid_ip') and self.concat_user_id_bid_ip:
-            cols = ['user_id', 'bid_ip']
-            df['user_id'] = df[cols].apply(
-                lambda row: '_'.join(row.values.astype(str)), axis=1)
-            self.exclude_columns.append('bid_ip')
-
-        if hasattr(self, 'use_category_groups') and self.use_category_groups:
-            df['content_groups'] = df.content_category.progress_apply(
-                lambda x: set() if pd.isna(x) else set([s.split('-')[0] for s in x.split()]))
-
-            df.content_category = df.content_groups.progress_apply(
-                lambda x: ' '.join(sorted(x)))
-
-            df.drop('content_groups', axis=1, inplace=True)
-            self.comment['use_category_groups'] = True
-
-        if hasattr(self, 'content_category_groups') and self.content_category_groups:
-            df['content_groups'] = df.content_category.progress_apply(
-                lambda x: set() if pd.isna(x) else set([s.split('-')[0] for s in x.split()]))
-
-            # '4hdkao6q' - это не учитываем
-            for idx in tqdm(range(26), total=26):
-                cat = f'iab{idx + 1}'
-                df[f'cg_{cat}'] = df['content_groups'].map(lambda x: cat in x).astype(int)
-
-            df.drop('content_groups', axis=1, inplace=True)
-            self.exclude_columns.append('content_category')
-            self.comment['content_category_groups'] = True
-
-        if hasattr(self, 'time_shift_counts') and self.time_shift_counts:
-            grp_cols = ['user_id', 'tag_id']
-            print(f'Группировка по {grp_cols} ...')
-            grp = df.groupby(grp_cols, as_index=False).agg(grp_times=('time', list))
-            # Сортировка времени
-            tqdm.pandas()
-            grp.grp_times = grp.grp_times.progress_apply(lambda x: sorted(x))
-            # добавление группировки в ДФ
-            df = df.merge(grp, on=grp_cols, how='left')
-            df['grp_times'] = df['grp_times'].map(lambda x: x if isinstance(x, list) else [])
-            # формирование колонок с разницей между текущим временем и предыдущими строками
-            for idx in range(1, self.time_shift_counts + 1):
-                td_col = f'time_diff_{idx}'
-                df[td_col] = df.progress_apply(
-                    lambda row: self.make_shift_times(row, idx), axis=1)
-                # Если делаем бинарные признаки
-                if hasattr(self, 'time_shift_counts_binary'):
-                    if self.time_shift_counts_binary:
-                        df[td_col] = df[td_col].map(lambda x: x >= 0).astype(int)
-            #
-            self.comment['time_shift_counts'] = self.time_shift_counts
-            #
-            if hasattr(self, 'time_shift_counts_binary') and self.time_shift_counts_binary:
-                self.comment['time_shift_counts_binary'] = self.time_shift_counts_binary
-            # удалим временные колонки
-            df.drop(['grp_times'], axis=1, inplace=True)
-
-        # Добавляем колонку 'tag_id_total' как отношение кол-ва по tag_id к общему кол-ву
-        grp_cols = ['user_id', 'tag_id']
-        df['tag_id_total'] = df.groupby(grp_cols)['bid_ip'].transform('count').fillna(0)
-        df['tag_id_total'] = df['tag_id_total'] / df['record_count']
-
-        # Добавляем колонку 'tag_id_count' с количеством записей для каждого grp_cols,
-        # минимальной датой, максимальной датой --> для расчета разницы во времени
-        grp_cols = ['user_id', 'date', 'tag_id']
-        df['tag_id_count'] = df.groupby(grp_cols)['bid_ip'].transform('count').fillna(0)
-        df['tag_id_min'] = df.groupby(grp_cols)['time'].transform('min')
-        df['tag_id_max'] = df.groupby(grp_cols)['time'].transform('max')
-        df['tag_id_diff'] = (df['tag_id_max'] - df['tag_id_min']).dt.total_seconds().fillna(0)
-        # удалим временные колонки
-        df.drop(['date', 'tag_id_min', 'tag_id_max'], axis=1, inplace=True)
 
         self.exclude_columns.extend(['landing_page', 'battr', 'creative_size',
                                      'ud_cookie_ts', 'content_tags', 'unique_id',
@@ -467,14 +353,6 @@ class DataTransform:
 
         self.comment['max_limit_nans'] = self.max_limit_nans
 
-        if hasattr(self, 'concat_ssp_full_placement_id2'):
-            if self.concat_ssp_full_placement_id2:
-                self.comment['concat_ssp_full_placement_id2'] = True
-
-        if hasattr(self, 'concat_user_id_bid_ip'):
-            if self.concat_user_id_bid_ip:
-                self.comment['concat_user_id_bid_ip'] = True
-
         df = self.initial_preparation(df)
 
         # удалять из трейна юзеров с пропусками
@@ -492,10 +370,6 @@ class DataTransform:
         if self.vectorizer is not None:
             df = self.vectorizer_codes(df, fit_vectorizer=True)
 
-        if hasattr(self, 'vectorizer_content_category'):
-            if self.cont_cat_vectorizer is not None:
-                df = self.vectorizer_content_category(df, fit_vectorizer=True)
-
         return df
 
     def vectorizer_codes(self, df, fit_vectorizer=False):
@@ -505,7 +379,7 @@ class DataTransform:
         :param fit_vectorizer: Будем обучать self.vectorizer
         :return: обработанный ДФ
         """
-        print(f'Векторизация последовательности user_segments')
+        print(f'Векторизация последовательности')
 
         # максимальная длина последовательности mcc_codes
         max_gc = df.user_segments.str.len().max()
@@ -539,66 +413,12 @@ class DataTransform:
         gc.collect()
 
         if fit_vectorizer:
-            self.comment.update(vectorizer_user_segments=True,
-                                vectorizer=self.vectorizer.__name__,
+            self.comment.update(vectorizer=self.vectorizer.__name__,
                                 ngram_range=self.ngram_range,
                                 min_df=self.min_df, max_features=self.max_features,
                                 vector_limit=max_gc)
             self.numeric_columns.extend(vct_columns)
             self.exclude_columns.extend(['user_segments'])
-
-        return df
-
-    def vectorizer_content_category(self, df, fit_vectorizer=False):
-        """
-        Векторизация турникетов за один день по group_columns
-        :param df: исходный ДФ
-        :param fit_vectorizer: Будем обучать self.cont_cat_vectorizer
-        :return: обработанный ДФ
-        """
-        print(f'Векторизация последовательности content_category')
-
-        # максимальная длина последовательности mcc_codes
-        max_gc = df.content_category.str.len().max()
-        if self.cont_cat_vector_limit:
-            max_gc = min(self.cont_cat_vector_limit, max_gc)
-
-        content_category = df.content_category.tolist()
-
-        # Если векторайзер не был обучен - учим его
-        if fit_vectorizer:
-            self.cont_cat_bigram_vectorizer = self.cont_cat_vectorizer(
-                ngram_range=self.cont_cat_ngram_range,
-                min_df=self.cont_cat_min_df,
-                max_features=self.cont_cat_max_features)
-            self.cont_cat_bigram_vectorizer.fit(content_category)
-
-        bigram = self.cont_cat_bigram_vectorizer.transform(content_category).toarray()
-
-        del content_category
-        # Вызов сборщика мусора для освобождения памяти, занятой удаленными объектами
-        gc.collect()
-
-        print(f'Векторизация породила: {bigram.shape[1]} колонок')
-        vct_columns = [f'vcc_{n:03}' for n in range(bigram.shape[1])]
-        print(f'df.shape {df.shape} bigram.shape {bigram.shape} nan {np.isnan(bigram).sum()}')
-        df_bigram = pd.DataFrame(bigram, columns=vct_columns, index=df.index)
-        df = pd.concat([df, df_bigram], axis=1)
-        print(f'concat df.shape {df.shape} пропусков: {df.isna().sum().sum()}')
-
-        del df_bigram
-        # Вызов сборщика мусора для освобождения памяти, занятой удаленными объектами
-        gc.collect()
-
-        if fit_vectorizer:
-            self.comment.update(vectorizer_cont_cat=True,
-                                cont_cat_vectorizer=self.cont_cat_vectorizer.__name__,
-                                cont_cat_ngram_range=self.cont_cat_ngram_range,
-                                cont_cat_min_df=self.cont_cat_min_df,
-                                cont_cat_max_features=self.cont_cat_max_features,
-                                cont_cat_vector_limit=max_gc)
-            self.numeric_columns.extend(vct_columns)
-            self.exclude_columns.extend(['content_category'])
 
         return df
 
@@ -616,9 +436,6 @@ class DataTransform:
             if self.vectorizer is not None:
                 df = self.vectorizer_codes(df)
 
-            if hasattr(self, 'cont_cat_vectorizer') and self.cont_cat_vectorizer is not None:
-                df = self.vectorizer_content_category(df)
-
         total_time = print_msg('Постобработка данных...')
 
         if model_columns is None:
@@ -635,19 +452,14 @@ class DataTransform:
         if isinstance(self.conv_info, pd.DataFrame):
             df = df.merge(self.conv_info, on='user_id', how='left').fillna(0)
 
-        if hasattr(self, 'text_columns') and self.text_columns:
-            text_columns = self.text_columns
-        else:
-            text_columns = []
-
         cat_features = list(df.columns[df.dtypes == 'object'])
         num_features = list(df.columns[~(df.dtypes == 'object')])
 
-        cat_features = [f for f in cat_features if f not in ['label', 'time'] + text_columns]
-        num_features = [f for f in num_features if f not in ['label', 'time'] + text_columns]
+        cat_features = [f for f in cat_features if f not in ['label', 'time']]
+        num_features = [f for f in num_features if f not in ['label', 'time']]
 
         # заполнение пропусков категориальных колонок
-        df = self.fillna_fields(df, cat_features + text_columns)
+        df = self.fillna_fields(df, cat_features)
         # заполнение пропусков цифровых колонок
         df = self.fillna_fields(df, num_features, numeric_fields=True)
 
@@ -660,7 +472,7 @@ class DataTransform:
         print_time(total_time)
 
         # Переводим типы данных в минимально допустимые - экономим ресурсы
-        df = memory_compression(df, exclude_columns=text_columns)
+        df = memory_compression(df)
 
         return df
 
